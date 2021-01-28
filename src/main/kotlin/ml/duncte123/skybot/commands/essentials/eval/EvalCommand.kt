@@ -19,7 +19,6 @@
 package ml.duncte123.skybot.commands.essentials.eval
 
 import com.github.natanbc.reliqua.request.PendingRequest
-import groovy.lang.GroovyShell
 import kotlinx.coroutines.*
 import me.duncte123.botcommons.StringUtils
 import me.duncte123.botcommons.messaging.MessageUtils.*
@@ -39,6 +38,8 @@ import ml.duncte123.skybot.utils.JSONMessageErrorsHelper.sendErrorJSON
 import net.dv8tion.jda.api.requests.RestAction
 import java.io.PrintWriter
 import java.io.StringWriter
+import javax.script.ScriptEngine
+import javax.script.ScriptEngineManager
 import kotlin.system.measureTimeMillis
 
 @Authors(
@@ -49,52 +50,45 @@ import kotlin.system.measureTimeMillis
     ]
 )
 class EvalCommand : Command() {
-    private val engine: GroovyShell
-    private val importString: String
+    // a little help from minn :)
+    private val engine: ScriptEngine by lazy {
+        ScriptEngineManager().getEngineByExtension("kts")!!.apply {
+            this.eval(
+                """
+                import java.io.*
+                import java.lang.*
+                import java.math.*
+                import java.time.*
+                import java.util.*
+                import java.util.concurrent.*
+                import java.util.stream.*
+                import net.dv8tion.jda.api.*
+                import net.dv8tion.jda.api.entities.*
+                import net.dv8tion.jda.api.sharding.*
+                import net.dv8tion.jda.internal.entities.*
+                import net.dv8tion.jda.api.managers.*
+                import net.dv8tion.jda.internal.managers.*
+                import net.dv8tion.jda.api.utils.*
+                import ml.duncte123.skybot.utils.*
+                import ml.duncte123.skybot.entities.*
+                import ml.duncte123.skybot.*
+                import ml.duncte123.skybot.objects.command.*
+                import fredboat.audio.player.LavalinkManager
+                import ml.duncte123.skybot.objects.EvalFunctions.*
+                import me.duncte123.botcommons.messaging.MessageUtils.*
+                import me.duncte123.botcommons.messaging.EmbedUtils.*
+                import ml.duncte123.skybot.utils.JSONMessageErrorsHelper.*
+                """.trimIndent()
+            )
+        }
+    }
 
     init {
         this.category = CommandCategory.UNLISTED
         this.name = "eval"
         this.aliases = arrayOf("eval™", "evaluate", "evan", "eva;")
         this.help = "Evaluate groovy/java code on the bot"
-        this.usage = "<java/groovy code>"
-
-        engine = GroovyShell()
-
-        val packageImports = listOf(
-            "java.io",
-            "java.lang",
-            "java.math",
-            "java.time",
-            "java.util",
-            "java.util.concurrent",
-            "java.util.stream",
-            "net.dv8tion.jda.api",
-            "net.dv8tion.jda.api.entities",
-            "net.dv8tion.jda.api.entities.impl",
-            "net.dv8tion.jda.api.managers",
-            "net.dv8tion.jda.api.managers.impl",
-            "net.dv8tion.jda.api.utils",
-            "ml.duncte123.skybot.utils",
-            "ml.duncte123.skybot.entities",
-            "ml.duncte123.skybot",
-            "ml.duncte123.skybot.objects.command"
-        )
-
-        val classImports = listOf(
-            "fredboat.audio.player.LavalinkManager"
-        )
-
-        val staticImports = listOf(
-            "ml.duncte123.skybot.objects.EvalFunctions.*",
-            "me.duncte123.botcommons.messaging.MessageUtils.*",
-            "me.duncte123.botcommons.messaging.EmbedUtils.*",
-            "ml.duncte123.skybot.utils.JSONMessageErrorsHelper.*"
-        )
-
-        importString = packageImports.joinToString(separator = ".*\nimport ", prefix = "import ", postfix = ".*\nimport ") +
-            classImports.joinToString(separator = "\nimport ", postfix = "\n") +
-            staticImports.joinToString(prefix = "import static ", separator = "\nimport static ", postfix = "\n")
+        this.usage = "<kotlin code>"
     }
 
     @ExperimentalCoroutinesApi
@@ -115,33 +109,28 @@ class EvalCommand : Command() {
 
         if (userIn.startsWith("```") && userIn.endsWith("```")) {
             userIn = userIn
-                .replace("```(.*)\n".toRegex(), "")
+                .replace("```(?:kt)?\n".toRegex(), "")
                 .replace("\n?```".toRegex(), "")
         }
 
-        val script = importString + userIn
+        engine.put("commandManager", ctx.commandManager)
+        engine.put("message", ctx.message)
+        engine.put("channel", ctx.message.textChannel)
+        engine.put("guild", ctx.guild)
+        engine.put("member", ctx.member)
+        engine.put("author", ctx.author)
+        engine.put("jda", ctx.jda)
+        engine.put("shardManager", ctx.jda.shardManager)
+        engine.put("event", ctx.event)
 
-        engine.setVariable("commandManager", ctx.commandManager)
-        engine.setVariable("message", ctx.message)
-        engine.setVariable("channel", ctx.message.textChannel)
-        engine.setVariable("guild", ctx.guild)
-        engine.setVariable("member", ctx.member)
-        engine.setVariable("author", ctx.author)
-        engine.setVariable("jda", ctx.jda)
-        engine.setVariable("shardManager", ctx.jda.shardManager)
-        engine.setVariable("event", ctx.event)
-
-        engine.setVariable("args", ctx.args)
-        engine.setVariable("ctx", ctx)
-        engine.setVariable("variables", ctx.variables)
+        engine.put("args", ctx.args)
+        engine.put("ctx", ctx)
+        engine.put("variables", ctx.variables)
 
         @SinceSkybot("3.58.0")
-        GlobalScope.launch(
-            Dispatchers.Default, start = CoroutineStart.ATOMIC,
-            block = {
-                return@launch eval(ctx, script)
-            }
-        )
+        GlobalScope.launch {
+            return@launch eval(ctx, userIn)
+        }
     }
 
     @SinceSkybot("3.58.0")
@@ -149,7 +138,7 @@ class EvalCommand : Command() {
         val time = measureTimeMillis {
             val out = withTimeoutOrNull(60000L /* = 60 seconds */) {
                 try {
-                    engine.evaluate(script)
+                    engine.eval(script)
                 } catch (ex: Throwable) {
                     ex
                 }
@@ -160,7 +149,7 @@ class EvalCommand : Command() {
 
         LOGGER.info(
             "${TextColor.PURPLE}Took ${time}ms for evaluating last script ${TextColor.ORANGE}(User: ${ctx.author})" +
-                "${TextColor.YELLOW}(script: ${makeHastePost(script, "2d", "groovy").execute()})${TextColor.RESET}"
+                "${TextColor.YELLOW}(script: ${makeHastePost(script, "2d", "kotlin").execute()})${TextColor.RESET}"
         )
     }
 
@@ -182,7 +171,12 @@ class EvalCommand : Command() {
             }
 
             is RestAction<*> -> {
-                out.queue()
+                out.queue({
+                    sendMsg(ctx, "Rest action success: $it")
+                }) {
+                    sendMsg(ctx, "Rest action error: $it")
+                }
+
                 sendSuccess(ctx.message)
             }
 
@@ -208,7 +202,6 @@ class EvalCommand : Command() {
         return writer.toString()
     }
 
-    @Suppress("SameParameterValue")
     private fun makeHastePost(text: String, expiration: String = "1h", lang: String = "text"): PendingRequest<String> {
         val base = "https://paste.menudocs.org"
         val body = FormRequestBody()
